@@ -1,0 +1,238 @@
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.spatial import Voronoi
+from scipy.spatial import voronoi_plot_2d
+from shapely.geometry import Point, Polygon
+
+def Creat_Voronoi(Size, Vor_points, PictureSavePath, Visualization=False):
+    """
+    生成Voronoi图
+    参数:
+        Size: 模型长宽(不是网格个数,可以为小数)
+        Vor_points:  Voronoi图输入点(种子点)的坐标
+        PictureSavePath: Voronoi图保存路径
+        Visualization: 是否可视化
+    返回:
+        Vor0: 初始Voronoi图
+        Vor1：新的Voronoi图
+    """
+    ######################生成Voronoi图部分######################
+    LX, LY = Size  # 解包尺寸参数
+    # 生成初始Voronoi图
+    Vor0 = Voronoi(Vor_points)
+
+    # Voronoi图区域的边界(xmin, ymin, xmax, ymax)
+    boundary = [0, 0, LX, LY]
+
+    # 存储超出边界的Voronoi区域的输入点的坐标
+    out_of_bounds_points = []
+
+    # 遍历初始Voronoi图的每个区域
+    for i, point in enumerate(Vor0.points):
+        # 获取输入点的Voronoi区域索引值
+        Vor0_point_region = Vor0.point_region[i]
+        # 获取Voronoi区域的顶点索引值
+        Vor0_regions = Vor0.regions[Vor0_point_region]
+
+        # 检查区域是否包含-1
+        if -1 in Vor0_regions:
+            # 如果区域包含-1,说明该区域是无限延伸的,直接记录该输入点坐标
+            out_of_bounds_points.append(Vor0.points[i])
+        else:
+            # 如果区域没有包含-1,检查该区域的所有顶点是否超出边界
+            vertices = [Vor0.vertices[v] for v in Vor0_regions]
+
+            out_of_bounds = False
+            for vertex in vertices:
+                x, y = vertex
+                # 检查顶点是否超出边界
+                if x < boundary[0] or x > boundary[2] or y < boundary[1] or y > boundary[3]:
+                    out_of_bounds = True
+                    break
+
+            # 如果有顶点超出边界，记录该区域的输入点索引
+            if out_of_bounds:
+                out_of_bounds_points.append(Vor0.points[i])
+
+    # 将out_of_bounds_points转换为NumPy数组,便于进行向量化操作
+    out_of_bounds_points = np.array(out_of_bounds_points)
+
+    # 镜像操作:对于每一个边缘生成镜像点
+    mirror_points = []
+    # 1. 镜像至左边界（x=0）
+    mirror_points.append(np.column_stack((-out_of_bounds_points[:, 0], out_of_bounds_points[:, 1])))
+    # 2. 镜像至右边界（x=LX）
+    mirror_points.append(np.column_stack((2*LX - out_of_bounds_points[:, 0], out_of_bounds_points[:, 1])))
+    # 3. 镜像至下边界（y=0）
+    mirror_points.append(np.column_stack((out_of_bounds_points[:, 0], -out_of_bounds_points[:, 1])))
+    # 4. 镜像至上边界（y=LY）
+    mirror_points.append(np.column_stack((out_of_bounds_points[:, 0], 2*LY - out_of_bounds_points[:, 1])))
+    # 将原始点集和镜像点集合并
+    extended_points = np.vstack([Vor_points, *mirror_points])
+
+    # 绘制新的Voronoi图
+    Vor1 = Voronoi(extended_points)
+
+    if Visualization:
+        # 可视化处理
+        fig = plt.figure(figsize=(6, 6))
+        ax2 = fig.add_subplot(1,1,1)
+        voronoi_plot_2d(Vor1, ax=ax2)
+        plt.xlim(0, LX)
+        plt.ylim(0, LY)
+        # 保存Voronoi图到指定位置
+        plt.savefig(PictureSavePath)
+        plt.show()
+
+    return Vor0, Vor1
+
+
+def Creat_Inp(Size, mesh_size, Vor0, Vor1, InpSavePath):
+    """
+    生成inp文件
+    参数:
+        Size: Voronoi图的模型长宽(不是网格个数,可以为小数)
+        mesh_size: 网格尺寸(相邻节点之间的距离,可以为小数)
+        Vor0: 初始Voronoi图
+        Vor1: 新的Voronoi图
+        FileSavePath: Voronoi图保存路径
+        InpName: inp文件名
+    返回:
+        _:______
+    """
+    ######################生成inp文件部分######################
+
+    LX, LY = Size
+    # x方向y方向网格个数
+    x_num = round(LX/mesh_size)
+    y_num = round(LY/mesh_size)
+
+    # 生成inp文件里的节点坐标
+    x1 = np.linspace(0, LX, x_num+1)
+    y1 = np.linspace(0, LY, y_num+1)
+    X1, Y1 = np.meshgrid(x1, y1)
+
+    # 将X1, Y1坐标展平为一维数组，然后创建节点列表
+    nodes = np.column_stack((X1.ravel(), Y1.ravel()))
+
+    # 创建元素列表
+    elements = []
+    for i in range(y_num):
+        for j in range(x_num):
+            # 四个顶点的序号(索引值需-1)
+            node1 = i * (x_num+1) + (j+1)  # 左下角节点
+            node2 = i * (x_num+1) + (j+2)  # 右下角节点
+            node3 = (i + 1) * (x_num+1) + (j+2)  # 右上角节点
+            node4 = (i + 1) * (x_num+1) + (j+1)  # 左上角节点
+            # 找到这个单元的四个顶点的坐标
+            element_coord = np.array([nodes[node1-1], nodes[node2-1], nodes[node3-1], nodes[node4-1]])
+            # 求这个单元的中心点的坐标
+            center_point = np.mean(element_coord, axis=0)
+            elements.append([node1, node2, node3, node4, center_point[0], center_point[1]])
+
+    # 创建一个字典来存储每个Voronoi区域对应的元素索引值集合
+    Voronoi_elements = {i: set() for i in range(len(Vor0.points))}
+
+    # 遍历每个元素，检查其中心点是否在Voronoi多边形区域内
+    for i, element in enumerate(elements):
+        center_point = Point(element[4], element[5])  # 创建shapely点对象
+
+        # 遍历新Voronoi图边界内的每个区域(这些区域的索引值和初始Voronoi图输入点的索引值一致)
+        for j, point in enumerate(Vor0.points):
+            # 在边界内的每个Voronoi区域的索引值
+            Vor1_point_region = Vor1.point_region[j]
+            # 在边界内的每个Voronoi区域的顶点索引值
+            Vor1_regions = Vor1.regions[Vor1_point_region]
+            # 每个Voronoi区域的顶点坐标
+            Vor1_vertices = [Vor1.vertices[v] for v in Vor1_regions]
+            # 创建每个Voronoi图的Polygon对象
+            Voronoi_Poly = Polygon(Vor1_vertices)
+
+            if Voronoi_Poly.contains(center_point):  # 如果中心点在该区域内
+                Voronoi_elements[j].add(i)  # 将元素索引添加到对应区域的集合中
+                break
+
+    # 创建Abaqus的inp文件
+    with open(InpSavePath, "w") as inpfile:
+
+        # 写入开头部分
+        inpfile.write("*Heading\n")
+        inpfile.write("** Job name: Job-1 Model name: Model-1\n")
+        inpfile.write("** Generated by: Abaqus/CAE 2021\n")
+        inpfile.write("*Preprint, echo=NO, model=NO, history=NO, contact=NO\n")
+        inpfile.write("**\n")
+
+        # 写入节点
+        inpfile.write("** PARTS\n")
+        inpfile.write("**\n")
+        inpfile.write("*Part, name=Part-1\n")
+        inpfile.write("*Node\n")
+        for i, node in enumerate(nodes):
+            inpfile.write(f" {i+1}, {node[0]}, {node[1]}\n")
+
+        # 写入元素  #这里假设是四节点平面应力单元
+        inpfile.write("*Element, type=CPS4\n")
+        for i, element in enumerate(elements):
+            inpfile.write(f" {i+1}, {element[0]}, {element[1]}, {element[2]}, {element[3]}\n")
+
+        # 每行最多写入的元素数量(你可以根据需要调整)
+        max_elements_per_line = 10
+        # 写入set   #每个Voronoi区域一个set
+        for i, element_set in Voronoi_elements.items():
+            inpfile.write(f"*Elset, elset=Set-{i+1}\n")
+            # 将元素集转换为列表
+            element_list = list(element_set)
+            # 将元素按批次分行，每行最多写入 max_elements_per_line 个元素
+            for j in range(0, len(element_list), max_elements_per_line):
+                batch = element_list[j:j + max_elements_per_line]
+                # 生成一行元素编号，并将其以逗号和空格分隔
+                line = ", ".join([str(e + 1) for e in batch])  # e+1 是因为 Abaqus 是 1-based 编号
+                inpfile.write(line + "\n")
+
+        # 写入末尾部分
+        inpfile.write("*End Part\n")
+        inpfile.write("**\n")
+        inpfile.write("**\n")
+        inpfile.write("** ASSEMBLY\n")
+        inpfile.write("**\n")
+        inpfile.write("*Assembly, name=Assembly\n")
+        inpfile.write("**\n")
+        inpfile.write("*Instance, name=Part-1-1, part=Part-1\n")
+        inpfile.write("*End Instance\n")
+        inpfile.write("**\n")
+        inpfile.write("*End Assembly\n")
+    return
+
+
+# 使用示例 --------------------------------------------------
+if __name__ == "__main__":
+
+    # 0. 已经通过S_5CDTofPore_V3获得了三角剖分结果B
+    # 定义文件路径（和保存时相同）
+    FileInputPath = "E:\\Desktop\\python\\CombineVoronoiPoreSave\\SquareHole\\A.png"
+    FileSavePath = os.path.splitext(FileInputPath)[0]
+
+    # 从文本文件读取数据
+    TxtSavePath = FileSavePath + "_Vor_points.txt"  # 你可以根据需要修改文件名
+    loaded_Vor_points = []
+    with open(TxtSavePath, 'r') as f:
+        for line in f:
+            # 去除空白字符并分割坐标
+            coords = line.strip().split()
+            # 将字符串转换为浮点数
+            point = [float(coord) for coord in coords]
+            loaded_Vor_points.append(point)
+    # 转换为NumPy数组
+    Vor_points = np.array(loaded_Vor_points)
+
+    # 1. 基于顶点文件生成初始与新的Voronoi图文件
+    Size = (100, 100)
+    PictureSavePath1 = FileSavePath + "_Voronoi.png"
+    Vor0, Vor1 = Creat_Voronoi(Size, Vor_points, PictureSavePath1, Visualization=True)
+
+    # 2. 生成inp文件
+    InpSavePath = FileSavePath + "_InpFile.inp"
+    mesh_size = 0.5
+    Creat_Inp(Size, mesh_size, Vor0, Vor1, InpSavePath)
+    #    输出INP文件
