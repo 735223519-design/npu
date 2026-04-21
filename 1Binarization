@@ -1,0 +1,70 @@
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
+import os
+
+def RGB_to_Binary(rgb, threshold_range):
+    """
+    将RGB彩色图像转换为黑白二值图像  # 灰度值阈值范围threshold_range
+    """
+    # 将像素值从[0,255]缩放到[0,1]方便后续阈值处理,
+    # 且plt.imshow()或cv2.imshow()会自动将[0,1]映射回[0,255],因此人眼看到的视觉效果完全一致
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY) / 255.0
+    # 返回与给定数组gray具有相同形状和类型的新数组
+    binary = np.zeros_like(gray)
+    # 灰度值小于下限或大于上限的像素,设为1 (0=黑,1=白)
+    binary[(gray < threshold_range[0]) | (gray > threshold_range[1])] = 1
+    return binary
+
+
+def Binarization_Image(FileInputPath, FileOutputPath, threshold_range, blur_kernel, scale_factor):
+    """
+    功能：完整的图像处理流程（读取→模糊→缩放→二值化→保存）
+    参数:
+        input_path: 输入图像路径
+        output_path: 输出图像路径
+        threshold_range: 灰度值阈值范围
+        blur_kernel: 高斯模糊的核大小,二值化之前模糊能减少噪声干扰
+        scale_factor: 缩放因子,匹配物理尺寸时需要调整
+    返回:
+        volume_fraction: 烧结银(白像素)的体积分数
+    """
+    # 读取输入图像(支持PNG/JPG格式)
+    img = plt.imread(FileInputPath)
+    blurred = cv2.GaussianBlur(img, blur_kernel, 0)
+
+    # 尺寸缩放(可选)
+    if scale_factor != 1.0:
+        new_size = (int(img.shape[1] * scale_factor),
+                    int(img.shape[0] * scale_factor))
+        # 如果缩放因子不是1,调整图像大小,使用抗锯齿的插值方法
+        blurred = cv2.resize(blurred, new_size, interpolation=cv2.INTER_AREA)
+
+    # 二值化并计算体积分数
+    binary_img = RGB_to_Binary(blurred, threshold_range)
+    volume_fraction = np.mean(binary_img)
+    # 黑像素体积分数(孔隙体积分数)
+    print(f"黑色体积分数: {1-volume_fraction:.4f}")
+
+    # 保存结果
+    plt.imsave(FileOutputPath, binary_img, cmap='gray', format='png')
+
+    return volume_fraction
+
+
+if __name__ == "__main__":
+    # 输入图片
+    FileInputPath = "E:\\ZhaoXianyi - f\\ewnjian\\l_2026_IJMS_\\250\\250H.png"
+    # 输出图片名
+    FileOutputPath = os.path.splitext(FileInputPath)[0] + "_S1.png"
+    # 灰度值阈值
+    threshold_range=[0.0, 0.00300]
+    # 高斯模糊时的核大小,必须为正奇数,增加平滑效果
+    GaussNuclear = 19
+    blur_kernel=(GaussNuclear, GaussNuclear)
+    # 缩放系数
+    scale_factor= 1
+
+    # 运行的语句
+    Binarization_Image(FileInputPath, FileOutputPath, threshold_range, blur_kernel, scale_factor)
+
