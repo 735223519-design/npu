@@ -1,0 +1,117 @@
+import os
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from skimage import io
+from S_2GetNuclearAreaDistribution_V2 import CountRegionAreaNumber
+from S_3BsplineCurve_V2 import Fit_All_Contours
+
+# S_4BrokenofBsplineCurve
+# 采用多边形逼近(Douglas-Peucker算法)
+# 较小轮廓的点数太多
+
+def BrokenLine_of_BsplineCurve(fitted_curves, FileInputPath, epsilon_ratio, Visualization=False):
+    """
+    对拟合得到的B样条曲线进行折线化,便于后续约束三角剖分
+    参数:
+        fitted_curves: 拟合得到的所有轮廓的B样条曲线的点集
+        FileInputPath: 原始图像路径(用于获取尺寸)
+        epsilon_ratio: 控制逼近精度(值越小,越接近原始轮廓,顶点越多)
+        Visualization: 是否进行可视化
+    返回:
+        Broken_Line_list: 所有轮廓的折线列表(每个元素是Nx2的Numpy数组)
+
+    """
+    # 1. 读取图像获取尺寸
+    img = io.imread(FileInputPath)
+    if len(img.shape) > 2:
+        img = img[:, :, 0]
+    height, width = img.shape[:2]
+
+    # 2. 设置与原始图像像素尺寸精确对应的画布,后面循环时一点点画上(如果要可视化的话)
+    if Visualization:
+        dpi = 100
+        fig = plt.figure(figsize=(width / dpi, height / dpi), dpi=dpi)
+        ax = plt.Axes(fig, [0, 0, 1, 1])
+        fig.add_axes(ax)
+        ax.set_xlim(0, width)  # X轴从0到图像宽度
+        ax.set_ylim(height, 0)  # 图像坐标系原点在左上角,不这样绘制的图像会上下颠倒
+        ax.axis('off')  # 隐藏坐标轴和边框,节省边缘空间,使图像充满画布
+        ax.imshow(img, cmap='gray', alpha=0)  # 显示原始的孔隙,alpha不透明度
+
+    Broken_Line_list = []
+    # 3. 对每条B样条曲线进行折线化
+    for curve in fitted_curves:
+        # 将曲线点转为OpenCV所需的整型格式(approxPolyDP需要)
+        curve_int = np.array(curve, dtype=np.float32)  # 先转为float32
+        # 计算轮廓周长(动态调整epsilon的基础)
+        perimeter = cv2.arcLength(curve_int, closed=True)
+
+        # 动态计算epsilon(基于周长和比例系数),epsilon值越小顶点越多
+        epsilon = epsilon_ratio * np.sqrt(perimeter)
+        # 如果小轮廓的顶点太多max往大调/大轮廓的顶点太少min往小调
+        epsilon = max(epsilon, 0.8)   # 保底最小epsilon（避免过小轮廓顶点爆炸）
+        epsilon = min(epsilon, 1.2)  # 保顶最大epsilon（避免过大轮廓顶点过少）
+        print(epsilon)
+        # 多边形逼近(Douglas-Peucker算法)
+        approx = cv2.approxPolyDP(curve_int, epsilon, closed=True)
+        # 将结果转为Nx2格式并存入列表
+        broken_line = approx.squeeze(axis=1)  # 去除多余的维度
+        Broken_Line_list.append(broken_line)
+
+        # 可视化
+        if Visualization:
+            # 绘制原始B样条曲线(蓝色),分别是曲线的x坐标/y坐标/蓝色实线/线宽为1/半透明效果/
+            ax.plot(curve[:, 0], curve[:, 1], 'b-', linewidth=1, alpha=0.5)
+            # 绘制折线化结果(红色)
+            ax.plot(broken_line[:, 0], broken_line[:, 1], 'r-', linewidth=1, alpha=1)
+            # 连接折线的首尾点,形成闭合多边形
+            ax.plot([broken_line[-1, 0], broken_line[0, 0]],
+                    [broken_line[-1, 1], broken_line[0, 1]], 'r-', linewidth=1, alpha=1)
+            # 标记折线的所有顶点,点的x坐标/y坐标/大小/颜色/形状/
+            ax.scatter(broken_line[:, 0], broken_line[:, 1], s=5, c='red', marker='o')
+
+    # 4. 保存可视化结果
+    if Visualization:
+        FileOutputPath = os.path.splitext(FileInputPath)[0] + "_BrokenofBsplineCurve.png"
+        plt.savefig(FileOutputPath, bbox_inches='tight', pad_inches=0, dpi=dpi)
+        plt.close()
+
+    return Broken_Line_list
+
+# 使用示例 --------------------------------------------------
+if __name__ == "__main__":
+    # 1. 先用代码获取轮廓组列表Contours
+    FileInputPath = "E:\\Desktop\\python\\CombineVoronoiPoreSave\\0704\\AL.png"
+    Region_number, Region_area, Labeled_image, Contours, Hierarchies = CountRegionAreaNumber(
+        FileInputPath,
+        Visualization=False)
+
+    # 2. 对所有轮廓组列表Contours进行B样条拟合
+    fitted_curves, control_points = Fit_All_Contours(
+        Contours,
+        FileInputPath,
+        base_s=100,
+        base_points=100,
+        Visualization=False)
+
+    # 3. 对拟合得到的B样条曲线fitted_curves进行折线化
+    Broken_Line_list = BrokenLine_of_BsplineCurve(
+        fitted_curves,
+        FileInputPath,
+        epsilon_ratio=0.08,  # 推荐值0.002-0.01
+        Visualization=True)
+
+    # 4. 打印结果统计
+    original_points = sum(len(curve) for curve in fitted_curves)
+    simplified_points = sum(len(line) for line in Broken_Line_list)
+    reduction_ratio = (original_points - simplified_points) / original_points * 100
+
+    print(f"\n折线化结果统计:")
+    print(f"原始B样条曲线总顶点数: {original_points}")
+    print(f"简化后折线总顶点数: {simplified_points}")
+    print(f"顶点减少比例: {reduction_ratio:.1f}%")
+
+    for i, line in enumerate(Broken_Line_list):
+        print(f"轮廓{i}: {len(line)}个顶点")
+
