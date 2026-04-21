@@ -1,0 +1,128 @@
+import os
+import numpy as np
+from scipy.interpolate import splprep, splev
+import matplotlib.pyplot as plt
+from skimage import io
+from S_2GetNuclearAreaDistribution import CountRegionAreaNumber
+
+def Fit_All_Contours(Contours, FileInputPath, base_s=100, base_points=100, Visualization=False):
+    """
+    对Contours列表中的所有轮廓进行B样条曲线拟合
+    参数:
+        Contours: 轮廓列表(来自CountRegionAreaNumber函数)
+        FileInputPath: 原始图像路径(用于获取尺寸)
+        base_s: 基础平滑系数(越大越平滑)
+        base_points: 基础生成拟合曲线的点数
+        Visualization: 是否进行可视化
+    返回:
+        fitted_curves: 所有轮廓的拟合曲线列表
+        control_points_list: 所有轮廓的控制点列表
+    """
+    # 读取图像获取尺寸
+    img = io.imread(FileInputPath)
+    if len(img.shape) > 2:
+        img = img[:, :, 0]
+    height, width = img.shape[:2]
+
+    fitted_curves = []
+    control_points_list = []
+
+    # 设置与原始图像像素尺寸精确对应的画布,后面循环时一点点画上(如果要可视化的话)
+    if Visualization:
+        dpi = 100
+        fig = plt.figure(figsize=(width / dpi, height / dpi), dpi=dpi)
+        ax = plt.Axes(fig, [0, 0, 1, 1])
+        fig.add_axes(ax)
+        ax.set_xlim(0, width)   # X轴从0到图像宽度
+        ax.set_ylim(height, 0)  # 图像坐标系原点在左上角,不这样绘制的图像会上下颠倒
+        ax.axis('off')              # 隐藏坐标轴和边框,节省边缘空间,使图像充满画布
+
+    # 遍历所有轮廓
+    for i, contour in enumerate(Contours):
+        if len(contour) < 3:  # 至少需要3个点才能拟合,点数不足为无效,跳过该轮廓
+            continue
+
+        # 根据轮廓的大小,动态调整平滑系数
+        contour_size = len(contour)
+        if contour_size < 20:         # 微小轮廓
+            dynamic_s = max(base_s * 0.3, 1)  # 最小保证dynamic_s>=1
+            dynamic_points = max(int(base_points * 0.3), 10)  # 最少保证dynamic_points>10
+        elif contour_size < 50:  # 小轮廓
+            dynamic_s = base_s * 0.5
+            dynamic_points = int(base_points * 0.6)
+        elif contour_size < 150:  # 中等轮廓
+            dynamic_s = base_s
+            dynamic_points = base_points
+        else:  # 大轮廓
+            dynamic_s = base_s * (contour_size / 80)  # 按比例放大
+            dynamic_points = int(base_points * 2.0)  # 最多2倍基础点数
+
+        # 确保轮廓闭合,B样条拟合要求闭合轮廓才能正确工作
+        contour_array = np.array(contour)   # 将列表形式的轮廓点转为NumPy数组
+        # 比较第一个点[0]与最后一个点[-1]坐标是否相等,若不等将第一个点追加到数组末尾
+        if not np.array_equal(contour_array[0], contour_array[-1]):
+            contour_array = np.vstack([contour_array, contour_array[0]])
+
+        # B样条曲线拟合,使用try避免单个轮廓拟合失败导致整个程序中断
+        try:
+            # 对离散轮廓点进行B样条曲线拟合,s为平滑系数,per=True表示闭合轮廓
+            tck, u = splprep(contour_array.T, s=dynamic_s, per=True)
+            # tck包含节点向量knots,控制点坐标control_points,样条次数的元组degree,u表示参数化后的点位置
+            knots, control_points, degree = tck
+            # 将控制点从(2,N)转为(N,2)格式
+            control_points = np.array(control_points).T
+
+            # 参数空间采样生成拟合曲线点集(B样条曲线是参数化曲线,用参数u在[0,1]区间内描述整条曲线)
+            # 在[0,1]区间等距采样num_points=100个,num_points越大曲线越连续
+            u_new = np.linspace(0, 1, dynamic_points)
+            # 输出对应参数位置的曲线坐标值
+            x_new, y_new = splev(u_new, tck)
+            # 存储所有轮廓的B样条曲线的点集
+            fitted_curve = np.column_stack((x_new, y_new))
+            fitted_curves.append(fitted_curve)
+            control_points_list.append(control_points)
+
+            # 可视化
+            if Visualization:
+                # 绘制原始轮廓(红色)
+                ax.plot(contour_array[:, 0], contour_array[:, 1], 'darkred', linewidth=1.5, alpha=0.5)
+                # 绘制拟合曲线轮廓(蓝色)
+                ax.plot(x_new, y_new, 'b-', linewidth=1)
+                # 绘制控制点(绿色)
+                ax.plot(control_points[:, 0], control_points[:, 1], 'go', markersize=2, alpha=0.5)
+
+        except Exception as e:
+            print(f"轮廓 {i} 拟合失败: {str(e)}")
+            continue
+
+    # 保存可视化结果
+    if Visualization:
+        FileOutputPath = os.path.splitext(FileInputPath)[0] + "_BsplineFit4.png"
+        plt.savefig(FileOutputPath, bbox_inches='tight', pad_inches=0, dpi=dpi)
+        plt.close()
+
+    return fitted_curves, control_points_list
+
+
+# 使用示例 --------------------------------------------------
+if __name__ == "__main__":
+    # 1. 先用代码段1获取Contours
+    FileInputPath = "E:\\Desktop\\python\\SimilarityTest_2\\0618\\AL1_Gray.png"
+    Region_number, Region_area, Labeled_image, Contours = CountRegionAreaNumber(
+        FileInputPath,
+        Visualization=False
+    )
+
+    # 2. 对所有轮廓进行B样条拟合
+    fitted_curves, control_points = Fit_All_Contours(
+        Contours,
+        FileInputPath,
+        base_s=100,
+        base_points=100,
+        Visualization=True
+    )
+
+    # 3. 打印结果
+    print(f"成功拟合 {len(fitted_curves)}/{len(Contours)} 个轮廓")
+    for i, (curve, ctrl_pts) in enumerate(zip(fitted_curves, control_points)):
+        print(f"轮廓 {i}: 控制点数量={len(ctrl_pts)}, 拟合曲线点数={len(curve)}")
