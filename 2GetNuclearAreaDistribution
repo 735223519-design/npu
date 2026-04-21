@@ -1,0 +1,161 @@
+import cv2
+import os
+import numpy as np
+from skimage import io
+import matplotlib.pyplot as plt
+
+
+def CountRegionAreaNumber(FileInputPath, Visualization=False):
+    """
+    统计二值化图像中黑色区域的面积,数量,轮廓
+    参数:
+        FileInputPath: 二值化图像的路径(黑色为孔隙，白色为背景)
+        Visualization: 是否可视化
+    返回:
+        Region_number: 黑色区域数量
+        Region_area:   黑色区域面积的列表(list),按区域ID升序排列
+        Labeled_image: 标记后的图像(ndarray),不同斑块用不同灰度值表示
+        Contours:      每个斑块的轮廓坐标列表(list),按区域ID升序排列
+    """
+    # 1. 读取并预处理图像
+    img = io.imread(FileInputPath)
+    # 灰度图像img.shape=(height, width);彩色图像img.shape=(height, width, 3)
+    # plt.imsave输出储存图片时会存为彩色RGB格式,但是灰度图像的三个通道RGB的值完全相同
+    # 检查图像是否通道数>2,如果是取R通道/G通道/B通道转为灰度
+    if len(img.shape) > 2:
+        img = img[:, :, 0]
+
+    # 2. 将图像二值化,确保<128的像素(较暗区域,黑色区域像素值为0)为True,对应前景孔隙
+    # 如果是黑色背景+白色孔隙,改为 binary = img > 128
+    binary = img < 128
+
+    # 3. 转换为OpenCV需要的格式(背景0，前景255), np.where(条件, 满足时的值, 不满足时的值)
+    binary_cv = np.where(binary, 255, 0).astype(np.uint8)
+
+    # 4. 连通域分析(使用OpenCV)
+    # num_labels检测到的区域总数, labeled_image每个区域一个ID, stats区域的面积/高/宽等信息, centroids每个区域的质心坐标
+    # binary_cv输入的二值图像, connectivity连通性判定, ltype输出标签图像的数据类型
+    num_labels, labeled_image, stats, centroids = cv2.connectedComponentsWithStats(
+        binary_cv, connectivity=8, ltype=cv2.CV_32S)
+
+    # 5. 提取斑块信息(跳过背景标签0)
+    Region_number = num_labels - 1
+    # cv2.CC_STAT_AREA是stats统计信息矩阵中的区域像素面积,每个区域遍历一遍
+    Region_area = [int(stats[i, cv2.CC_STAT_AREA]) for i in range(1, num_labels)]
+
+    # 6. 获取每个斑块的轮廓
+    Contours = []
+    # 从1开始遍历所有标签(跳过0,因为0代表背景)
+    for label in range(1, num_labels):
+        # 创建一个与输入图像大小相同的全黑(0)掩膜,只有当前标签对应的区域是白色
+        mask = np.zeros_like(binary_cv, dtype=np.uint8)
+        mask[labeled_image == label] = 255
+
+        # 查找轮廓,mask为输入图像值,cv2.RETR_EXTERNAL只检测最外层轮廓忽略内部孔洞,压缩水平\垂直和对角线段\只保留端点
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # 合并所有轮廓点(如果该标签有多个不连通的区域)
+        contour_points = np.vstack(contours).squeeze()  # 去除多余的维度
+        Contours.append(contour_points.tolist())  # 转换为列表形式存储
+
+    # 7. 标记图像归一化(0-255)
+    Labeled_image = cv2.normalize(labeled_image, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+
+    # 8. 可视化(如果启用)
+    if Visualization:
+        height, width = img.shape[:2]
+        # 统一DPI
+        dpi = 100
+        # 画布尺寸设置与输入图片一致
+        fig = plt.figure(figsize=(width/dpi, height/dpi), dpi=dpi)
+        ax = plt.Axes(fig, [0, 0, 1, 1])
+        # 将自定义的坐标轴添加到画布
+        fig.add_axes(ax)
+        plt.imshow(Labeled_image, cmap='nipy_spectral', )  # 使用彩虹色系显示不同标签
+        plt.axis('off')  # 关闭坐标轴
+        # 输出图片保存路径,通过提取无后缀的文件名并手动添加后缀
+        FileOutputPath = os.path.splitext(FileInputPath)[0] + "_CountRegionAreaNumber.png"
+        # 保存可视化结果bbox_inches=None:保留完整画布尺寸,pad_inches=0:进一步减少边距
+        plt.savefig(FileOutputPath,
+                    bbox_inches=None,
+                    pad_inches=0,
+                    dpi=dpi)
+        plt.close()
+
+    return Region_number, Region_area, Labeled_image, Contours
+
+def Get_contours(Contours, FileInputPath, Visualization=False):
+    """
+    根据轮廓坐标列表绘制纯轮廓图
+    参数:
+        Contours: 轮廓列表,每个元素是一个斑块的轮廓坐标
+        FileInputPath: 二值化图像的路径(黑色为孔隙，白色为背景)
+        Visualization: 是否显示可视化结果
+    返回:
+        contour_image: 仅包含轮廓的图像(numpy数组)
+    """
+    # 1. 参数设置
+    img = io.imread(FileInputPath)
+    if len(img.shape) > 2:
+        img = img[:, :, 0]
+    height, width = img.shape[:2]
+
+    line_color = (0, 0, 0)     # line_color轮廓颜色(BGR格式),默认为黑色
+    line_width = 1               # line_width轮廓线宽,默认为1
+    background_color = (255, 255, 255)  # background_color,白色背景(BGR格式)
+
+    # 2. 创建空白图像
+    contour_image = np.zeros((height, width, 3), dtype=np.uint8)
+    contour_image[:] = background_color
+
+    # 3. 绘制所有轮廓
+    for contour in Contours:
+        if len(contour) > 2:  # 至少需要3个点才能形成闭合轮廓
+            # 将轮廓点转换为OpenCV需要的格式
+            contour_array = np.array(contour, dtype=np.int32).reshape((-1, 1, 2))
+            cv2.drawContours(contour_image, [contour_array], -1, line_color, line_width)
+
+    # 4. 可视化(如果启用)
+    if Visualization:
+        dpi = 100
+        # 画布尺寸设置与输入图片一致
+        fig = plt.figure(figsize=(width/dpi, height/dpi), dpi=dpi)
+        ax = plt.Axes(fig, [0, 0, 1, 1])
+        fig.add_axes(ax)
+        # 显示轮廓图像
+        ax.imshow(cv2.cvtColor(contour_image, cv2.COLOR_BGR2RGB))
+        ax.axis('off')
+        # 保存可视化结果
+        FileOutputPath = os.path.splitext(FileInputPath)[0] + "_Contours.png"
+        plt.savefig(FileOutputPath,
+                    bbox_inches='tight',
+                    pad_inches=0,
+                    dpi=dpi)
+        plt.close()
+
+    return contour_image
+
+# 使用示例 --------------------------------------------------
+if __name__ == "__main__":
+    # 读取图像(替换为图像路径)
+    FileInputPath = "E:\\Desktop\\python\\CombineVoronoiPoreSave\\0703\\AL1_Gray.png"
+
+    # 运行语句
+    Region_number, Region_area, Labeled_image, Contours = CountRegionAreaNumber(FileInputPath, Visualization=True)
+    contour_image = Get_contours(Contours, FileInputPath, Visualization=True)
+
+    # 打印结果
+    print(f"斑块总数: {Region_number}")
+    print(f"面积统计: \n最小{min(Region_area)}px | 最大{max(Region_area)}px | 平均{np.mean(Region_area):.1f}px")
+    print(f"详细面积列表: {Region_area}")
+
+    # 找到面积最大的斑块索引
+    max_area_index = np.argmax(Region_area)
+    # 获取面积最大的斑块轮廓
+    largest_contour = Contours[max_area_index]
+    print(f"\n面积最大的斑块信息：")
+    print(f"斑块索引：{max_area_index}")
+    print(f"斑块面积：{Region_area[max_area_index]}像素")
+    print(f"轮廓坐标数量：{len(largest_contour)}个点")
+    print(f"轮廓坐标（面积={Region_area[max_area_index]:.2f}像素）：")
+    print(largest_contour)
